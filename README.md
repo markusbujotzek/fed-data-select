@@ -2,8 +2,7 @@
 
 This repo was set up in the following way:
 
-'''
-
+```
 # Clone your fork of FLamby (if forking)
 git clone https://github.com/YOUR_USERNAME/FLamby.git
 cd FLamby
@@ -29,4 +28,4 @@ git add FLamby
 git commit -m "Update FLamby submodule"
 git push origin your-feature-branch
 
-'''
+```
