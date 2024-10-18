@@ -1,0 +1,12 @@
+################################################################
+# Update flamby venv:
+# conda env update --file src/my_environment.yaml --name flamby
+################################################################
+
+name: flamby  # your current conda environment name
+channels:
+  # - conda-forge
+  # - defaults
+dependencies:
+# add the missing packages
+#   - ...   
