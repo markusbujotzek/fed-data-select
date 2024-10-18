@@ -1,0 +1,3 @@
+[submodule "FLamby"]
+	path = FLamby
+	url = https://github.com/owkin/FLamby.git
