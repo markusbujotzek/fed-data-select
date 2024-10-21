@@ -9,4 +9,5 @@ channels:
   # - defaults
 dependencies:
 # add the missing packages
+    - histolab==0.7.0
 #   - ...   
