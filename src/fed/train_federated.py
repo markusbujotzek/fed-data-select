@@ -77,13 +77,35 @@ def import_n_set_agg_strategy(agg_strategy_name):
         )
 
 
+def import_data_selection_method(data_selection_method):
+    global data_select_method
+
+    if data_selection_method == "KSLoss":
+        from data_selection_methods.KSLoss import ksloss as data_select_method
+
+    elif not data_selection_method:
+        print(
+            "No dataselection method defined. You seem to enjoy wasting model performance, computational costs and energy!"
+        )
+
+    else:
+        # Raise an exception if sth went wrong
+        raise ValueError(
+            f"Data selection method '{data_selection_method}' is not supported. Please provide a valid method name."
+        )
+
+
 def train_federated(args):
 
-    # import dataset and aggregation strategy and set their params
+    # import dataset
     import_dataset(args.dataset)
-    import_n_set_agg_strategy(args.agg_strategy)
     print(f"Dataset set: {args.dataset}")
+    # import aggregation strategy and set their params
+    import_n_set_agg_strategy(args.agg_strategy)
     print(f"Federated aggregation strategy set: {args.agg_strategy}")
+    # import data selection method
+    import_data_selection_method(args.data_selection)
+    print(f"Data selection method set: {args.data_selection}")
 
     # We loop on all the clients of the distributed dataset and instantiate associated data loaders
     if args.dataset == "FedCamelyon16":
@@ -111,6 +133,20 @@ def train_federated(args):
     # set loss and model
     lossfunc = BaselineLoss()
     m = Baseline()
+
+    # manipulate training data loaders accoring to data selection method
+    if args.data_selection:
+        if args.data_selection == "KSLoss":
+            ksloss_data_select = data_select_method(
+                benchmark_model=m,
+                loss_fn=lossfunc,
+                batch_size=BATCH_SIZE,
+                benchmark_split_percentage=0.05,
+                benchmark_train_ratio=0.8,
+            )
+            train_dataloaders = ksloss_data_select.ksloss_data_selection(
+                train_dataloaders
+            )
 
     # Federated Learning loop
     # 2nd line of code to change to switch to another strategy (feed the FL strategy the right HPs)
@@ -171,6 +207,11 @@ def get_args():
         required=True,
         default="FedAvg",
         help="[REQUIRED] Name of the federated aggregation strategy that should be used. Default is FedAvg.",
+    )
+    parser.add_argument(
+        "--data_selection",
+        default=None,
+        help="[OPTIONAL] Name of the data selection strategy that should be used. Default is None.",
     )
 
     args = parser.parse_args()
