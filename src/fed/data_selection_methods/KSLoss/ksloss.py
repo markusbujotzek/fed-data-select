@@ -2,6 +2,9 @@ import torch
 import random
 from torch.utils.data import Subset, DataLoader, random_split, ConcatDataset
 
+from flamby.strategies.utils import _Model, DataLoaderWithMemory
+from utils.utils import DatasetWrapper, DatasetWithIDWrapper
+
 
 class KSLoss:
     def __init__(
@@ -11,12 +14,14 @@ class KSLoss:
         batch_size: int = 32,
         benchmark_model=None,
         loss_fn=None,
+        args=None,
     ):
         self.benchmark_split_percentage = benchmark_split_percentage
         self.benchmark_train_ratio = benchmark_train_ratio
         self.batch_size = batch_size
         self.benchmark_model = benchmark_model
         self.loss_fn = loss_fn
+        self.args = args
 
     def get_benchmark_data(self, train_dataloaders):
         """
@@ -38,6 +43,9 @@ class KSLoss:
 
         for idx, data_loader in enumerate(train_dataloaders):
             total_samples = len(data_loader.dataset)
+            print(
+                f"Dataset {idx} contains {total_samples} samples BEFORE extraction of benchmark split!"
+            )
             num_benchmark_samples = int(total_samples * self.benchmark_split_percentage)
 
             # Select random indices for benchmark
@@ -53,9 +61,17 @@ class KSLoss:
             train_dataloaders[idx] = DataLoader(
                 remaining_subset, batch_size=self.batch_size, shuffle=True
             )
+            print(
+                f"Dataset {idx} contains {len(train_dataloaders[idx].dataset)} samples AFTER extraction of benchmark split!"
+            )
 
         # Combine samples into a single benchmark dataset
-        benchmark_dataset = ConcatDataset(benchmark_samples)
+        # benchmark_dataset = ConcatDataset(benchmark_samples)
+        # benchmark_dataset = ConcatDataset([Subset(train_dataloaders[idx].dataset, benchmark_indices) for idx, benchmark_indices in enumerate(benchmark_samples)])
+        benchmark_dataset = ConcatDataset(
+            [DatasetWrapper(sample) for sample in benchmark_samples]
+        )
+        print(f"Benchmark dataset conatins {len(benchmark_dataset)} samples!")
         return train_dataloaders, benchmark_dataset
 
     def split_benchmark_data(self, benchmark_dataset):
@@ -76,15 +92,31 @@ class KSLoss:
         """
         num_train = int(len(benchmark_dataset) * self.benchmark_train_ratio)
         num_test = len(benchmark_dataset) - num_train
-        benchmark_train_dataset, benchmark_test_dataset = random_split(
-            benchmark_dataset, [num_train, num_test]
+        benchmark_train_indices, benchmark_test_indices = random_split(
+            range(len(benchmark_dataset)), [num_train, num_test]
+        )
+
+        # Convert to actual samples instead of indices
+        benchmark_train_samples = [
+            benchmark_dataset[i] for i in benchmark_train_indices.indices
+        ]
+        benchmark_test_samples = [
+            benchmark_dataset[i] for i in benchmark_test_indices.indices
+        ]
+
+        # Create Subsets based on the actual samples
+        benchmark_train_dataset = ConcatDataset(
+            [DatasetWrapper(sample) for sample in benchmark_train_samples]
+        )
+        benchmark_test_dataset = ConcatDataset(
+            [DatasetWrapper(sample) for sample in benchmark_test_samples]
         )
 
         benchmark_train_loader = DataLoader(
             benchmark_train_dataset, batch_size=self.batch_size, shuffle=True
         )
         benchmark_test_loader = DataLoader(
-            benchmark_test_dataset, batch_size=self.batch_size, shuffle=False
+            benchmark_test_dataset, batch_size=1, shuffle=False
         )
 
         return benchmark_train_loader, benchmark_test_loader
@@ -103,35 +135,73 @@ class KSLoss:
         trained_model : Model
             Trained benchmark model.
         """
-        trained_model = (
-            self.benchmark_model
-        )  # Assume benchmark_model is trained in place
-        # ... Implement training logic here ...
-        return trained_model
+        benchmark_train_loader_with_memory = DataLoaderWithMemory(
+            benchmark_train_loader
+        )
 
-    def eval_benchmark_model(self, benchmark_model, data_loader):
+        # Create a new instance of _Model for the benchmark_model
+        model_instance = _Model(
+            model=self.benchmark_model,
+            train_dl=benchmark_train_loader_with_memory,
+            optimizer_class=self.args[
+                "optimizer_class"
+            ],  # or another optimizer you prefer
+            lr=self.args["learning_rate"],  # Set your desired learning rate
+            loss=self.loss_fn,  # Replace with your actual loss function
+            nrounds=100,  # This should be the number of local updates, e.g. self.args["nrounds"]
+            log=False,  # Set to True if you want to log training
+        )
+
+        # Train the benchmark model locally using the provided DataLoader
+        model_instance._local_train(benchmark_train_loader_with_memory, 100)
+
+        # Return the trained benchmark model
+        return self.benchmark_model
+
+    def convert_dataloader_to_dataloader_w_id(
+        self, list_of_dataloaders: DataLoader, batch_sizes: list = None
+    ):
+
+        # handle if batch_sizes is None
+        if not batch_sizes:
+            batch_sizes = [None] * len(list_of_dataloaders)
+
+        dataloaders_w_id = []
+        for idx, dataloader in enumerate(list_of_dataloaders):
+            ds = dataloader.dataset
+            ds_w_id = DatasetWithIDWrapper(ds)
+            dataloader_w_id = DataLoader(
+                ds_w_id,
+                batch_size=1 if batch_sizes[idx] is None else batch_sizes[idx],
+                shuffle=dataloader.shuffle if "shuffle" in dataloader else False,
+            )
+            dataloaders_w_id.append(dataloader_w_id)
+        return dataloaders_w_id
+
+    def compute_sample_losses(self, model, data_loader):
         """
-        Evaluates the benchmark model on the provided DataLoader and calculates loss per sample.
+        Calculate the loss for each data sample by passing the data through the model.
 
         Parameters
         ----------
-        benchmark_model : Model
-            Trained benchmark model to evaluate.
-        data_loader : DataLoader
-            DataLoader for which to compute sample losses.
+        model : torch.nn.Module
+            The model used for evaluation.
+        data_loader : torch.utils.data.DataLoader
+            The DataLoader providing the input data and labels.
 
         Returns
         -------
-        sample_losses : list
-            List of loss values per sample.
+        list of dict
+            A list containing dictionaries that map sample IDs to their corresponding loss values.
         """
         sample_losses = []
-        benchmark_model.eval()
+        model.eval()
         with torch.no_grad():
-            for inputs, labels in data_loader:
-                outputs = benchmark_model(inputs)
-                loss = torch.nn.functional.mse_loss(outputs, labels, reduction="none")
-                sample_losses.extend(loss.tolist())
+            for inputs, labels, id in data_loader:
+                outputs = model(inputs)
+                loss = self.args["loss"].forward(outputs, labels)
+                sample_losses.append({id[0]: loss.item()})
+
         return sample_losses
 
     def select_train_samples(self, train_sample_benchmark_loss):
@@ -185,29 +255,53 @@ class KSLoss:
         # Step 3: Train benchmark model
         trained_benchmark_model = self.train_benchmark_model(benchmark_train_loader)
 
-        # Step 4: Evaluate on benchmark test set
-        benchmark_test_sample_benchmark_loss = self.eval_benchmark_model(
-            trained_benchmark_model, benchmark_test_loader
+        # Step 4: add hash id to dataloaders to clearly identify every sample
+        benchmark_test_loader_w_id = self.convert_dataloader_to_dataloader_w_id(
+            [benchmark_test_loader]
+        )[0]
+        train_dataloaders_w_id = self.convert_dataloader_to_dataloader_w_id(
+            train_dataloaders
         )
 
-        # Step 5: Evaluate on each client train dataset
-        train_sample_benchmark_loss = []
-        for data_loader in train_dataloaders:
-            sample_losses = self.eval_benchmark_model(
-                trained_benchmark_model, data_loader
+        # Step 5: Evaluate on benchmark test set
+        benchmark_test_sample_benchmark_loss = self.compute_sample_losses(
+            trained_benchmark_model, benchmark_test_loader_w_id
+        )
+
+        # Step 6: Evaluate on each client train datasets
+        train_sample_benchmark_loss_per_client = []
+        for train_dataloader_w_id in train_dataloaders_w_id:
+            train_sample_benchmark_loss_per_client.append(
+                self.compute_sample_losses(
+                    trained_benchmark_model, train_dataloader_w_id
+                )
             )
-            train_sample_benchmark_loss.extend(sample_losses)
+
+        # Step 7: Summarize all client's training samples and sort w.r.t. their loss values in ascending order
+        # add all client's data into one id_loss_collection
+        train_sample_benchmark_loss_all_clients = sum(
+            train_sample_benchmark_loss_per_client, []
+        )
+        # also make sure the hashes are indeed unique
+        keys = [
+            key for d in train_sample_benchmark_loss_all_clients for key in d.keys()
+        ]
+        assert len(keys) == len(set(keys)), "Duplicate keys found."
+        # sort in ascending order
+        sorted_train_sample_benchmark_loss_all_clients = sorted(
+            train_sample_benchmark_loss_all_clients, key=lambda d: list(d.values())[0]
+        )
 
         # Step 6: Select samples to keep based on sorted loss values
         kept_indices = self.select_train_samples(train_sample_benchmark_loss)
 
-        # Step 7: Filter each train dataloader to retain only kept samples
-        for i, data_loader in enumerate(train_dataloaders):
-            all_indices = list(range(len(data_loader.dataset)))
-            retained_indices = [idx for idx in all_indices if idx in kept_indices]
-            retained_subset = Subset(data_loader.dataset, retained_indices)
-            train_dataloaders[i] = DataLoader(
-                retained_subset, batch_size=self.batch_size, shuffle=True
-            )
+        # # Step 7: Filter each train dataloader to retain only kept samples
+        # for i, data_loader in enumerate(train_dataloaders):
+        #     all_indices = list(range(len(data_loader.dataset)))
+        #     retained_indices = [idx for idx in all_indices if idx in kept_indices]
+        #     retained_subset = Subset(data_loader.dataset, retained_indices)
+        #     train_dataloaders[i] = DataLoader(
+        #         retained_subset, batch_size=self.batch_size, shuffle=True
+        #     )
 
         return train_dataloaders

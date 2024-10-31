@@ -81,7 +81,7 @@ def import_data_selection_method(data_selection_method):
     global data_select_method
 
     if data_selection_method == "KSLoss":
-        from data_selection_methods.KSLoss import ksloss as data_select_method
+        from data_selection_methods.KSLoss.ksloss import KSLoss as data_select_method
 
     elif not data_selection_method:
         print(
@@ -95,20 +95,20 @@ def import_data_selection_method(data_selection_method):
         )
 
 
-def train_federated(args):
+def train_federated(arparser_argsgs):
 
     # import dataset
-    import_dataset(args.dataset)
-    print(f"Dataset set: {args.dataset}")
+    import_dataset(parser_args.dataset)
+    print(f"Dataset set: {parser_args.dataset}")
     # import aggregation strategy and set their params
-    import_n_set_agg_strategy(args.agg_strategy)
-    print(f"Federated aggregation strategy set: {args.agg_strategy}")
+    import_n_set_agg_strategy(parser_args.agg_strategy)
+    print(f"Federated aggregation strategy set: {parser_args.agg_strategy}")
     # import data selection method
-    import_data_selection_method(args.data_selection)
-    print(f"Data selection method set: {args.data_selection}")
+    import_data_selection_method(parser_args.data_selection)
+    print(f"Data selection method set: {parser_args.data_selection}")
 
     # We loop on all the clients of the distributed dataset and instantiate associated data loaders
-    if args.dataset == "FedCamelyon16":
+    if parser_args.dataset == "FedCamelyon16":
         train_dataloaders = [
             torch.utils.data.DataLoader(
                 FedDataset(center=i, train=True, pooled=False),
@@ -134,20 +134,6 @@ def train_federated(args):
     lossfunc = BaselineLoss()
     m = Baseline()
 
-    # manipulate training data loaders accoring to data selection method
-    if args.data_selection:
-        if args.data_selection == "KSLoss":
-            ksloss_data_select = data_select_method(
-                benchmark_model=m,
-                loss_fn=lossfunc,
-                batch_size=BATCH_SIZE,
-                benchmark_split_percentage=0.05,
-                benchmark_train_ratio=0.8,
-            )
-            train_dataloaders = ksloss_data_select.ksloss_data_selection(
-                train_dataloaders
-            )
-
     # Federated Learning loop
     # 2nd line of code to change to switch to another strategy (feed the FL strategy the right HPs)
     args = {
@@ -161,6 +147,22 @@ def train_federated(args):
         # epochs on each local dataset as with the pooled training
         "nrounds": get_nb_max_rounds(100),
     }
+
+    # manipulate training data loaders accoring to data selection method
+    if parser_args.data_selection:
+        if parser_args.data_selection == "KSLoss":
+            ksloss_data_select = data_select_method(
+                benchmark_model=m,
+                loss_fn=lossfunc,
+                batch_size=BATCH_SIZE,
+                benchmark_split_percentage=0.05,
+                benchmark_train_ratio=0.8,
+                args=args,
+            )
+            train_dataloaders = ksloss_data_select.ksloss_data_selection(
+                train_dataloaders
+            )
+
     s = strat(**args)
 
     # full federated training is performed according to and in defined strategy
@@ -168,7 +170,7 @@ def train_federated(args):
 
     # Evaluation
     # We only instantiate one test set in this particular case: the pooled one
-    if args.dataset == "FedCamelyon16":
+    if parser_args.dataset == "FedCamelyon16":
         test_dataloaders = [
             torch.utils.data.DataLoader(
                 FedDataset(train=False, pooled=True),
@@ -214,11 +216,11 @@ def get_args():
         help="[OPTIONAL] Name of the data selection strategy that should be used. Default is None.",
     )
 
-    args = parser.parse_args()
+    parser_args = parser.parse_args()
 
-    return args
+    return parser_args
 
 
 if __name__ == "__main__":
-    args = get_args()
-    train_federated(args)
+    parser_args = get_args()
+    train_federated(parser_args)

@@ -1,13 +1,9 @@
-################################################################
-# Update flamby venv:
-# conda env update --file src/my_environment.yaml --name flamby
-################################################################
-
-name: flamby  # your current conda environment name
+name: flamby
 channels:
-  # - conda-forge
-  # - defaults
+  - defaults
+  - conda-forge
 dependencies:
-# add the missing packages
-    - histolab==0.7.0
-#   - ...   
+  - pip
+  - pip:
+      - histolab==0.7.0
+      - imagecorruptions==1.1.2
