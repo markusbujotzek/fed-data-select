@@ -62,9 +62,9 @@ class DatasetWithIDWrapper(torch.utils.data.Dataset):
         tuple
             (data element, label, unique identifier)
         """
-        data, label = self.dataset[idx]
+        item = self.dataset[idx]
         unique_id = self.ids[idx]
-        return data, label, unique_id
+        return (*item, unique_id)
 
     def get_item_by_id(self, unique_id):
         """

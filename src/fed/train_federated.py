@@ -107,7 +107,7 @@ def train_federated(arparser_argsgs):
     import_data_selection_method(parser_args.data_selection)
     print(f"Data selection method set: {parser_args.data_selection}")
 
-    # We loop on all the clients of the distributed dataset and instantiate associated data loaders
+    # instantiate data loaders
     if parser_args.dataset == "FedCamelyon16":
         train_dataloaders = [
             torch.utils.data.DataLoader(
@@ -134,18 +134,17 @@ def train_federated(arparser_argsgs):
     lossfunc = BaselineLoss()
     m = Baseline()
 
-    # Federated Learning loop
-    # 2nd line of code to change to switch to another strategy (feed the FL strategy the right HPs)
-    args = {
+    # set general arguments for fl training
+    general_args = {
         "training_dataloaders": train_dataloaders,
         "model": m,
         "loss": lossfunc,
         "optimizer_class": torch.optim.SGD,
         "learning_rate": LR / 10.0,
-        "num_updates": 100,
+        "num_updates": 500,
         # This helper function returns the number of rounds necessary to perform approximately as many
         # epochs on each local dataset as with the pooled training
-        "nrounds": get_nb_max_rounds(100),
+        "nrounds": get_nb_max_rounds(500),
     }
 
     # manipulate training data loaders accoring to data selection method
@@ -155,15 +154,19 @@ def train_federated(arparser_argsgs):
                 benchmark_model=m,
                 loss_fn=lossfunc,
                 batch_size=BATCH_SIZE,
-                benchmark_split_percentage=0.05,
-                benchmark_train_ratio=0.8,
-                args=args,
+                args={
+                    **general_args,
+                    "dataset": parser_args.dataset,
+                    "benchmark_ds_percentage": parser_args.benchmark_ds_percentage,
+                    "benchmark_train_ratio": parser_args.benchmark_train_ratio,
+                    "num_epochs_benchmark_model_training": parser_args.num_epochs_benchmark_model_training,
+                },
             )
             train_dataloaders = ksloss_data_select.ksloss_data_selection(
                 train_dataloaders
             )
 
-    s = strat(**args)
+    s = strat(**general_args)
 
     # full federated training is performed according to and in defined strategy
     m = s.run()[0]
@@ -196,6 +199,7 @@ def train_federated(arparser_argsgs):
 def get_args():
     parser = argparse.ArgumentParser()
 
+    # General arguments
     parser.add_argument(
         "--dataset",
         type=str,
@@ -214,6 +218,26 @@ def get_args():
         "--data_selection",
         default=None,
         help="[OPTIONAL] Name of the data selection strategy that should be used. Default is None.",
+    )
+
+    # KSLoss specific arguments
+    parser.add_argument(
+        "--benchmark_ds_percentage",
+        type=float,
+        default=0.05,
+        help="[OPTIONAL] Percentage of client's data that is given to the benchmark dataset. Default is 0.05.",
+    )
+    parser.add_argument(
+        "--benchmark_train_ratio",
+        type=float,
+        default=0.8,
+        help="[OPTIONAL] Ratio of the benchmark dataset that is used for training. Default is 0.8.",
+    )
+    parser.add_argument(
+        "--num_epochs_benchmark_model_training",
+        type=int,
+        default=20,
+        help="[OPTIONAL] Number of epochs the benchmark model is trained for. Default is 20.",
     )
 
     parser_args = parser.parse_args()
