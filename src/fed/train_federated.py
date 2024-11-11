@@ -114,7 +114,7 @@ def train_federated(arparser_argsgs):
                 FedDataset(center=i, train=True, pooled=False),
                 batch_size=BATCH_SIZE,
                 shuffle=True,
-                num_workers=0,
+                num_workers=12,
                 collate_fn=collate_fn,  # Use collate_fn only for FedCamelyon16
             )
             for i in range(NUM_CLIENTS)
@@ -125,7 +125,7 @@ def train_federated(arparser_argsgs):
                 FedDataset(center=i, train=True, pooled=False),
                 batch_size=BATCH_SIZE,
                 shuffle=True,
-                num_workers=0,
+                num_workers=12,
             )
             for i in range(NUM_CLIENTS)
         ]
@@ -141,10 +141,12 @@ def train_federated(arparser_argsgs):
         "loss": lossfunc,
         "optimizer_class": torch.optim.SGD,
         "learning_rate": LR / 10.0,
-        "num_updates": 500,
+        "num_updates": 10,
         # This helper function returns the number of rounds necessary to perform approximately as many
         # epochs on each local dataset as with the pooled training
-        "nrounds": get_nb_max_rounds(500),
+        "nrounds": 500, # get_nb_max_rounds(500),
+        "log": True,
+        "log_period": 20,
     }
 
     # manipulate training data loaders accoring to data selection method
@@ -153,6 +155,7 @@ def train_federated(arparser_argsgs):
             ksloss_data_select = data_select_method(
                 benchmark_model=m,
                 loss_fn=lossfunc,
+                metric=metric,
                 batch_size=BATCH_SIZE,
                 args={
                     **general_args,

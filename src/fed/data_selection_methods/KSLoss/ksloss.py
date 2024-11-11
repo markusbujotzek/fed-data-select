@@ -17,6 +17,7 @@ class KSLoss:
         batch_size: int = 32,
         benchmark_model=None,
         loss_fn=None,
+        metric=None,
         args=None,
     ):
         self.benchmark_ds_percentage = args["benchmark_ds_percentage"]
@@ -27,6 +28,7 @@ class KSLoss:
         self.batch_size = batch_size
         self.benchmark_model = benchmark_model
         self.loss_fn = loss_fn
+        self.metric = metric
         self.dataset = args["dataset"]
         self.args = args
 
@@ -49,25 +51,25 @@ class KSLoss:
         benchmark_ds_per_client = []
 
         for idx, data_loader in enumerate(train_dataloaders):
+            total_samples = len(data_loader.dataset)
+            num_benchmark_samples = int(
+                total_samples * self.benchmark_ds_percentage
+            )
+
             all_labels_in_benchmark_ds = False
+            labels_cache = [label.item() for _, labels, *_ in data_loader for label in labels]
+
             while not all_labels_in_benchmark_ds:
-                total_samples = len(data_loader.dataset)
-                num_benchmark_samples = int(
-                    total_samples * self.benchmark_ds_percentage
-                )
-
                 # Select random indices for benchmark
-                all_indices = list(range(total_samples))
-                benchmark_indices = random.sample(all_indices, num_benchmark_samples)
-                remaining_indices = list(set(all_indices) - set(benchmark_indices))
+                all_indices = np.arange(total_samples)
+                benchmark_indices = np.random.choice(all_indices, num_benchmark_samples, replace=False)
+                remaining_indices = np.setdiff1d(all_indices, benchmark_indices)
 
-                # ensure that choosen benchmark samples represent all classes of current client
-                all_labels = set(
-                    label.item() for _, labels, *_ in data_loader for label in labels
-                )
-                benchmark_labels = {
-                    data_loader.dataset[i][1].item() for i in benchmark_indices
-                }
+                # Extract labels for benchmark samples without looping
+                benchmark_labels = set(data_loader.dataset[i][1].item() for i in benchmark_indices)
+
+                # Check if all labels are represented
+                all_labels = set(labels_cache)
                 if all_labels == benchmark_labels:
                     all_labels_in_benchmark_ds = True
 
@@ -77,18 +79,13 @@ class KSLoss:
             )
             remaining_subset = Subset(data_loader.dataset, remaining_indices)
 
-            # compose dataloader dependend on whether collate_fn is in original dataloader of not
-            if self.dataset == "FedCamelyon16":
-                train_dataloaders[idx] = DataLoader(
-                    remaining_subset,
-                    batch_size=self.batch_size,
-                    shuffle=True,
-                    collate_fn=data_loader.collate_fn,
-                )
-            else:
-                train_dataloaders[idx] = DataLoader(
-                    remaining_subset, batch_size=self.batch_size, shuffle=True
-                )
+            # Create DataLoader depending on the presence of `collate_fn`
+            kwargs = {
+                'batch_size': self.batch_size,
+                'shuffle': True,
+                'collate_fn': getattr(data_loader, 'collate_fn', None)
+            }
+            train_dataloaders[idx] = DataLoader(remaining_subset, **{k: v for k, v in kwargs.items() if v is not None})
             print(
                 f"Dataset {idx} contains {total_samples} samples BEFORE extraction of benchmark split!"
             )
@@ -185,12 +182,15 @@ class KSLoss:
             loss=self.loss_fn,
             nrounds=self.num_epochs_benchmark_model_training,
             log=True,
+            log_period=1,
         )
 
         # Train the benchmark model locally using the provided DataLoader
         model_instance._local_train(
             benchmark_train_loader_with_memory,
             num_updates=self.num_epochs_benchmark_model_training,
+            validation_loader=benchmark_test_loader,
+            metric=self.metric,
         )
 
         # Return the trained benchmark model
@@ -445,6 +445,8 @@ class KSLoss:
             train_sample_benchmark_loss_all_clients, key=lambda d: list(d.values())[0]
         )
 
+        print(f"benchmark_test_sample_benchmark_loss values: {benchmark_test_sample_benchmark_loss}")
+        print(f"sorted_train_sample_benchmark_loss_all_clients values: {sorted_train_sample_benchmark_loss_all_clients}")
         # Step 8: Select samples to keep based on sorted loss values
         kept_train_sample_benchmark_loss_all_clients = self.select_train_samples(
             benchmark_test_sample_benchmark_loss,
