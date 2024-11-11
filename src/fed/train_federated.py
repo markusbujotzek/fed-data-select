@@ -14,7 +14,6 @@ def import_dataset(ds_name):
     global BATCH_SIZE, LR, NUM_EPOCHS_POOLED, Baseline, BaselineLoss, metric, NUM_CLIENTS, get_nb_max_rounds, FedDataset
 
     if ds_name == "FedHeartDisease":
-        # 2 lines of code to change to switch to another dataset
         from flamby.datasets.fed_heart_disease import (
             BATCH_SIZE,
             LR,
@@ -43,6 +42,18 @@ def import_dataset(ds_name):
 
         # dataset requires padding implemented in collate_fn
         from flamby.datasets.fed_camelyon16 import collate_fn
+    elif ds_name == "FedKits19":
+        from flamby.datasets.fed_kits19 import (
+            BATCH_SIZE,
+            LR,
+            NUM_EPOCHS_POOLED,
+            Baseline,
+            BaselineLoss,
+            metric,
+            NUM_CLIENTS,
+            get_nb_max_rounds,
+        )
+        from flamby.datasets.fed_kits19 import FedKits19 as FedDataset
 
     # TODO implement more datasets
 
