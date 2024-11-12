@@ -52,24 +52,39 @@ class KSLoss:
 
         for idx, data_loader in enumerate(train_dataloaders):
             total_samples = len(data_loader.dataset)
-            num_benchmark_samples = int(
-                total_samples * self.benchmark_ds_percentage
-            )
+            num_benchmark_samples = int(total_samples * self.benchmark_ds_percentage)
 
             all_labels_in_benchmark_ds = False
-            labels_cache = [label.item() for _, labels, *_ in data_loader for label in labels]
+            # for classification, i.e. label is an integer
+            # labels_cache = [label.item() for _, labels, *_ in data_loader for label in labels]
+            # for segmentation, i.e. label is a tensor
+            labels_cache = []
+            for _, labels, *_ in data_loader:
+                labels_cache.extend(labels.tolist())
+            labels_cached = list(torch.unique(torch.tensor(labels_cache)))
+            all_labels = [t.item() for t in labels_cached]
 
             while not all_labels_in_benchmark_ds:
                 # Select random indices for benchmark
                 all_indices = np.arange(total_samples)
-                benchmark_indices = np.random.choice(all_indices, num_benchmark_samples, replace=False)
+                benchmark_indices = np.random.choice(
+                    all_indices, num_benchmark_samples, replace=False
+                )
                 remaining_indices = np.setdiff1d(all_indices, benchmark_indices)
 
+                # for classification, i.e. label is an integer
                 # Extract labels for benchmark samples without looping
-                benchmark_labels = set(data_loader.dataset[i][1].item() for i in benchmark_indices)
+                # benchmark_labels = set(data_loader.dataset[i][1].item() for i in benchmark_indices)
+                benchmark_labels = np.unique(
+                    list(
+                        label.tolist()
+                        for i in benchmark_indices
+                        for label in [data_loader.dataset[i][1]]
+                    )
+                ).tolist()
 
                 # Check if all labels are represented
-                all_labels = set(labels_cache)
+                # all_labels = set(labels_cache)
                 if all_labels == benchmark_labels:
                     all_labels_in_benchmark_ds = True
 
@@ -81,11 +96,13 @@ class KSLoss:
 
             # Create DataLoader depending on the presence of `collate_fn`
             kwargs = {
-                'batch_size': self.batch_size,
-                'shuffle': True,
-                'collate_fn': getattr(data_loader, 'collate_fn', None)
+                "batch_size": self.batch_size,
+                "shuffle": True,
+                "collate_fn": getattr(data_loader, "collate_fn", None),
             }
-            train_dataloaders[idx] = DataLoader(remaining_subset, **{k: v for k, v in kwargs.items() if v is not None})
+            train_dataloaders[idx] = DataLoader(
+                remaining_subset, **{k: v for k, v in kwargs.items() if v is not None}
+            )
             print(
                 f"Dataset {idx} contains {total_samples} samples BEFORE extraction of benchmark split!"
             )
@@ -305,21 +322,25 @@ class KSLoss:
         determined threshold to minimize the inclusion of noisy or irrelevant data.
         """
 
+        # Adaptations for our cross-silo setting:
+        # - cross-silo w/ less data per client -> adapt threshold (lambda) steps size to 1
+        # - cross-silo w/ less data per client -> increase resolution of CDFs => numbins=10000
+
         max_each_cut = []
-        steps = np.arange(10, len(train_samples_loss), 100)
+        steps = np.arange(1, len(train_samples_loss), 1)
 
         # F_v: cdf of benchmark validation ds
         benchmark_test_samples_loss_values = [
             list(d.values())[0] for d in benchmark_test_samples_loss
         ]
         cdf = stats.cumfreq(
-            benchmark_test_samples_loss_values, numbins=100, defaultreallimits=(0, 30)
+            benchmark_test_samples_loss_values, numbins=10000, defaultreallimits=(0, 30)
         )
         train_samples_loss_values = [list(d.values())[0] for d in train_samples_loss]
         for t in steps:
             # F_p: cdf of training ds
             cdf2 = stats.cumfreq(
-                train_samples_loss_values[0:t], numbins=100, defaultreallimits=(0, 30)
+                train_samples_loss_values[0:t], numbins=10000, defaultreallimits=(0, 30)
             )
             # compute KS-distance G
             difference = abs(
@@ -355,11 +376,16 @@ class KSLoss:
             indices_to_keep = [
                 i
                 for i, sample in enumerate(dataset)
-                if sample[3]
+                if sample[2]
                 in kept_hash_ids_per_client[
                     client_index
-                ]  # assuming the hash_id is [3] element of the sample
+                ]  # assuming the hash_id is [2] element of the sample
             ]
+
+            if len(indices_to_keep) == 0:
+                print(f"Client {client_index} has no samples to keep!")
+                filtered_dataloaders.append([])
+                continue
 
             kept_dataset = Subset(dataloader.dataset, indices_to_keep)
 
@@ -378,6 +404,9 @@ class KSLoss:
                 )
 
             filtered_dataloaders.append(filtered_dataloader)
+            print(
+                f"Client {client_index} keeps {len(filtered_dataloader.dataset)} samples!"
+            )
         return filtered_dataloaders
 
     def ksloss_data_selection(self, train_dataloaders):
@@ -445,8 +474,12 @@ class KSLoss:
             train_sample_benchmark_loss_all_clients, key=lambda d: list(d.values())[0]
         )
 
-        print(f"benchmark_test_sample_benchmark_loss values: {benchmark_test_sample_benchmark_loss}")
-        print(f"sorted_train_sample_benchmark_loss_all_clients values: {sorted_train_sample_benchmark_loss_all_clients}")
+        print(
+            f"benchmark_test_sample_benchmark_loss values: {benchmark_test_sample_benchmark_loss}"
+        )
+        print(
+            f"sorted_train_sample_benchmark_loss_all_clients values: {sorted_train_sample_benchmark_loss_all_clients}"
+        )
         # Step 8: Select samples to keep based on sorted loss values
         kept_train_sample_benchmark_loss_all_clients = self.select_train_samples(
             benchmark_test_sample_benchmark_loss,
@@ -473,7 +506,5 @@ class KSLoss:
         filtered_dataloaders = self.filter_kept_samples_per_client(
             kept_train_samples_per_client, train_dataloaders
         )
-        for idx, filtered_dataloader in enumerate(filtered_dataloaders):
-            print(f"Client {idx} keeps {len(filtered_dataloader.dataset)} samples!")
 
         return filtered_dataloaders

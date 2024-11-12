@@ -151,13 +151,13 @@ def train_federated(arparser_argsgs):
         "model": m,
         "loss": lossfunc,
         "optimizer_class": torch.optim.SGD,
-        "learning_rate": LR / 10.0,
+        "learning_rate": LR,  #  / 10.0,
         "num_updates": 10,
         # This helper function returns the number of rounds necessary to perform approximately as many
         # epochs on each local dataset as with the pooled training
-        "nrounds": 500, # get_nb_max_rounds(500),
+        "nrounds": get_nb_max_rounds(500),
         "log": True,
-        "log_period": 20,
+        "log_period": 5,
     }
 
     # manipulate training data loaders accoring to data selection method
