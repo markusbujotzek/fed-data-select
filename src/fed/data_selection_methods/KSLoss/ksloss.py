@@ -3,12 +3,12 @@ import random
 from torch.utils.data import Subset, DataLoader, random_split, ConcatDataset
 import numpy as np
 from scipy import stats
+import copy
 
 from flamby.strategies.utils import _Model, DataLoaderWithMemory
 from flamby.datasets.fed_camelyon16 import collate_fn
 from flamby.datasets.fed_camelyon16 import FedCamelyon16 as FedDataset
-
-from utils.utils import DatasetWrapper, DatasetWithIDWrapper
+from flamby.datasets.fed_kits19 import softmax_helper
 
 
 class KSLoss:
@@ -29,8 +29,15 @@ class KSLoss:
         self.benchmark_model = benchmark_model
         self.loss_fn = loss_fn
         self.metric = metric
+        self.lr = args["learning_rate"]
+        self.optimizer = args["optimizer_class"](
+            self.benchmark_model.parameters(), lr=self.lr
+        )
         self.dataset = args["dataset"]
         self.args = args
+
+        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        self.benchmark_model.to(self.device)
 
     def get_benchmark_data(self, train_dataloaders):
         """
@@ -171,6 +178,49 @@ class KSLoss:
         )
         return benchmark_train_loader, benchmark_test_loader
 
+    # def train_benchmark_model_old(self, benchmark_train_loader, benchmark_test_loader):
+    #     """
+    #     Trains the benchmark model on the benchmark_train_loader data.
+
+    #     Parameters
+    #     ----------
+    #     benchmark_train_loader : DataLoader
+    #         DataLoader for training the benchmark model.
+
+    #     Returns
+    #     -------
+    #     trained_model : Model
+    #         Trained benchmark model.
+    #     """
+    #     print("Training benchmark model...")
+    #     benchmark_train_loader_with_memory = DataLoaderWithMemory(
+    #         benchmark_train_loader
+    #     )
+
+    #     # Create a new instance of _Model for the benchmark_model
+    #     model_instance = _Model(
+    #         model=self.benchmark_model,
+    #         train_dl=benchmark_train_loader_with_memory,
+    #         optimizer_class=self.args["optimizer_class"],
+    #         lr=self.args["learning_rate"],
+    #         loss=self.loss_fn,
+    #         nrounds=self.num_epochs_benchmark_model_training,
+    #         log=True,
+    #         log_period=1,
+    #     )
+
+    #     # Train the benchmark model locally using the provided DataLoader
+    #     model_instance._local_train(
+    #         benchmark_train_loader_with_memory,
+    #         num_updates=self.num_epochs_benchmark_model_training,
+    #         validation_loader=benchmark_test_loader,
+    #         metric=self.metric,
+    #     )
+
+    #     # Return the trained benchmark model
+    #     print("Benchmark model training complete!")
+    #     return self.benchmark_model
+
     def train_benchmark_model(self, benchmark_train_loader, benchmark_test_loader):
         """
         Trains the benchmark model on the benchmark_train_loader data.
@@ -186,32 +236,91 @@ class KSLoss:
             Trained benchmark model.
         """
         print("Training benchmark model...")
-        benchmark_train_loader_with_memory = DataLoaderWithMemory(
-            benchmark_train_loader
-        )
 
-        # Create a new instance of _Model for the benchmark_model
-        model_instance = _Model(
-            model=self.benchmark_model,
-            train_dl=benchmark_train_loader_with_memory,
-            optimizer_class=self.args["optimizer_class"],
-            lr=self.args["learning_rate"],
-            loss=self.loss_fn,
-            nrounds=self.num_epochs_benchmark_model_training,
-            log=True,
-            log_period=1,
-        )
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        best_model_wts = copy.deepcopy(self.benchmark_model.state_dict())
+        best_acc = 0.0
+        self.benchmark_model = self.benchmark_model.to(device)
+        # To draw loss and accuracy plots
+        training_loss_list = []
+        training_dice_list = []
+        print(f" Benchmark Train Data Size: {len(benchmark_train_loader.dataset)}")
+        print(f" Benchmark Test Data Size: {len(benchmark_test_loader.dataset)}")
 
-        # Train the benchmark model locally using the provided DataLoader
-        model_instance._local_train(
-            benchmark_train_loader_with_memory,
-            num_updates=self.num_epochs_benchmark_model_training,
-            validation_loader=benchmark_test_loader,
-            metric=self.metric,
-        )
+        for epoch in range(self.num_epochs_benchmark_model_training):
+            print(f"Epoch {epoch}/{self.num_epochs_benchmark_model_training - 1}")
+            print("-" * 10)
 
-        # Return the trained benchmark model
-        print("Benchmark model training complete!")
+            dice_list = []
+            running_loss = 0.0
+            dice_score = 0.0
+
+            # set mode to training mode
+            self.benchmark_model.train()
+            # Iterate over data.
+            for sample in benchmark_train_loader:
+                inputs = sample[0].to(device)
+                labels = sample[1].to(device)
+
+                self.optimizer.zero_grad()
+                with torch.set_grad_enabled(True):
+                    outputs = self.benchmark_model(inputs)
+                    loss = self.loss_fn(outputs, labels)
+                    loss.backward()
+                    self.optimizer.step()
+
+                    running_loss += loss.item()
+                    dice_score += self.metric(outputs, labels)
+
+            # set mode to evaluation mode
+            self.benchmark_model.eval()
+            # Iterate over data.
+            for sample in benchmark_test_loader:
+                inputs = sample[0].to(device)
+                labels = sample[1].to(device)
+
+                with torch.set_grad_enabled(False):
+                    preds_softmax = (
+                        softmax_helper(outputs)
+                        if self.dataset == "FedKits19"
+                        else outputs
+                    )
+                    preds = preds_softmax.argmax(1)
+                    dice_score = self.metric(preds.cpu(), labels.cpu())
+                    dice_list.append(dice_score)
+
+            epoch_loss = running_loss / len(benchmark_train_loader.dataset)
+            epoch_acc = np.mean(dice_list)  # average dice
+
+            if epoch_acc > best_acc:
+                best_acc = epoch_acc
+                best_model_wts = copy.deepcopy(self.benchmark_model.state_dict())
+                early_stopping_counter = 0
+                print("Juhuuu! Best model updated!")
+            if epoch_acc < best_acc:
+                early_stopping_counter += 1
+                print(
+                    f"Ohooo! Early stopping counter increased to {early_stopping_counter}!"
+                )
+                if early_stopping_counter > 5:
+                    print("Training early stopped!")
+                    break
+
+            print(
+                "Training Loss: {:.4f} Validation Acc: {:.4f} ".format(
+                    epoch_loss, epoch_acc
+                )
+            )
+            training_loss_list.append(epoch_loss)
+            training_dice_list.append(epoch_acc)
+
+        print("Best test Balanced acc: {:4f}".format(best_acc))
+        print("----- Training Loss ---------")
+        print(training_loss_list)
+        print("------Validation Accuracy ------")
+        print(training_dice_list)
+        # load best model weights
+        self.benchmark_model.load_state_dict(best_model_wts)
         return self.benchmark_model
 
     # def convert_dataloader_to_dataloader_w_id(
@@ -283,9 +392,12 @@ class KSLoss:
             A list containing dictionaries that map sample IDs to their corresponding loss values.
         """
         sample_losses = []
+        model.to(self.device)
         model.eval()
         with torch.no_grad():
             for inputs, labels, hash_id in data_loader:
+                inputs = inputs.to(self.device)
+                labels = labels.to(self.device)
                 outputs = model(inputs)
                 loss = self.args["loss"].forward(outputs, labels)
                 sample_losses.append({hash_id[0]: loss.item()})
