@@ -1,3 +1,4 @@
 .vscode/launch.json
 *.pyc
 events.out.tfevents.*
+*.csv
