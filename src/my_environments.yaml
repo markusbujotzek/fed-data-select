@@ -1,9 +1,0 @@
-name: flamby
-channels:
-  - defaults
-  - conda-forge
-dependencies:
-  - pip
-  - pip:
-      - histolab==0.7.0
-      - imagecorruptions==1.1.2
