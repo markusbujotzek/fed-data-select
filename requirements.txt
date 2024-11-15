@@ -1,0 +1,69 @@
+# Core dependencies from environment.yml
+# python==3.10
+pip
+pytest
+ipython
+
+# Core dependencies from setup.py
+argparse
+numpy
+pandas
+pre-commit
+scikit-learn
+scipy
+seaborn
+setuptools>=65.5.1
+tensorboard
+torch>=1.13.1
+torchvision
+tqdm
+umap-learn
+opacus
+
+# Additional extras from setup.py (all_extra)
+# camelyon16
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
+histolab
+openslide-python
+requests
+transformers
+
+# heart
+wget
+
+# isic2019
+albumentations
+efficientnet-pytorch
+requests  # (repeated, but it's fine in a requirements.txt)
+wget      # (repeated, but it's fine in a requirements.txt)
+
+# ixi
+monai
+nibabel
+
+# kits19
+batchgenerators
+nibabel==3.2.2  # pinned version as specified
+nnunet==1.7.0
+
+# lidc
+dask
+dicom-numpy
+networkx
+nibabel==3.2.2  # repeated but same pinned version
+pydicom
+scipy  # (repeated, but fine)
+scikit-image
+
+# tcga
+lifelines
+
+# docs
+matplotlib
+sphinx
+sphinx-rtd-theme
+
+# tests
+pytest  # already included above
