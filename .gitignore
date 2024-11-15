@@ -3,3 +3,4 @@
 events.out.tfevents.*
 *.csv
 *.txt
+.venv/
